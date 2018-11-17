@@ -1,0 +1,16 @@
+{
+  "movieId": "",
+  "startDate": "yyyy-mm-dd",
+  "endDate": "yyyy-mm-dd",
+  "cookies": [
+    {
+      "name": "JSESSIONID",
+      "value": "",
+      "httpOnly": true
+    },
+    {
+      "name": "BACKEND",
+      "value": ""
+    }
+  ]
+}
