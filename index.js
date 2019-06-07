@@ -1,6 +1,7 @@
 let fs = require('fs');
 let moment = require('moment');
-let webdriverio = require('webdriverio');
+let sharp = require('sharp');
+let { Builder, By, Key, until } = require('selenium-webdriver');
 
 let baseUrl = 'https://www.cineworld.ie/films/avengers-endgame/{movieId}#/buy-tickets-by-film?in-cinema=8013&at={date}&for-movie={movieId}&filtered=imax&view-mode=list';
 let configFile = 'build/config.json';
@@ -13,78 +14,86 @@ async function main() {
 async function scrape() {
     let config = JSON.parse(fs.readFileSync(configFile));
 
-    startDate = moment(config.startDate);
-    endDate = moment(config.endDate);
+    let startDate = moment(config.startDate);
+    let endDate = moment(config.endDate);
     baseUrl = baseUrl.replace(/{movieId}/g, config.movieId);
 
-    let browser = await webdriverio.remote({
-        capabilities: {
-            browserName: 'chrome',
-        },
-    });
+    let driver = await new Builder().forBrowser('chrome').build();
 
-    let $ = browser.$.bind(browser);
-    await browser.setTimeout({ implicit: timeout, script: timeout });
-
-    await browser.url('https://www.cineworld.ie/');
-    await browser.setCookies(config.cookies);
-    await browser.refresh();
+    await driver.get('https://www.cineworld.ie/');
+    for (let cookie of config.cookies) {
+        await driver.manage().addCookie(cookie);
+    }
+    await driver.navigate().refresh();
 
     try {
         for (let currDate = startDate; currDate <= endDate; currDate = currDate.add(1, 'days')) {
             let currDateStr = currDate.format('YYYY-MM-DD');
             let url = baseUrl.replace('{date}', currDateStr);
 
-            await browser.url(url);
+            await driver.get(url);
 
-            await (await $('a.btn-sm')).waitForExist();
-            let times = await browser.execute(getTimes);
+            await driver.wait(until.elementLocated(By.css('div.qb-movie-info-column a.btn')));
+            let times = await driver.executeScript(getTimes);
 
             for (let time of times) {
-                console.log(`Entering ${currDate} ${time}`);
+                console.log(`Entering ${currDateStr} ${time}`);
 
-                await browser.url(url);
+                await driver.get(url);
 
-                await (await $('a.btn-sm')).waitForExist();
-                await browser.execute(clickTime, time);
+                await driver.wait(until.elementLocated(By.css('div.qb-movie-info-column a.btn')));
+                await driver.executeScript(clickTime, time);
 
-                await (await $('select.ticket-select')).waitForExist();
-                await browser.execute(clickTicketQuantity);
+                await driver.wait(until.elementLocated(By.css('select.ticket-select')));
+                await driver.executeScript(clickTicketQuantity);
 
                 try {
-                    await (await $('div.screen_area')).waitForDisplayed();
+                    await driver.wait(until.elementLocated(By.css('div.screen_area')));
                 }
                 catch (ex) {
                     // Tickets sold out
                     continue;
                 }
 
-                await browser.pause(500);
-                await browser.execute(clickSelectedSeat);
-                await browser.pause(500);
+                await driver.sleep(1000); // Finish animation
+                await driver.executeScript(clickSelectedSeat);
+
+                let screenArea = await driver.findElement(By.css('div.screen_area'));
+                let { x, y, width, height } = await screenArea.getRect();
 
                 let timeEscaped = time.replace(':', '-');
-                await (await $('div.screen_area')).saveScreenshot(`build/${currDateStr}_${timeEscaped}.png`);
+                let fullFilePath = `build/${currDateStr}_${timeEscaped}_full.png`;
+                let filePath = `build/${currDateStr}_${timeEscaped}.png`;
+
+                let data = await driver.takeScreenshot();
+                let base64Data = data.replace(/^data:image\/png;base64,/, '');
+                fs.writeFileSync(fullFilePath, base64Data, 'base64');
+
+                sharp(fullFilePath)
+                    .extract({ left: Math.floor(x), top: Math.floor(y), width: Math.ceil(width + 1), height: Math.ceil(height + 1) })
+                    .toFile(filePath);
+
+                fs.unlinkSync(fullFilePath);
             }
         }
 
-        await browser.deleteSession();
+        await driver.quit();
     }
     catch (ex) {
         console.error(ex);
 
-        //await browser.deleteSession();
+        //await driver.quit();
     }
 }
 
 function getTimes() {
-    return $('a.btn-sm')
+    return $('div.qb-movie-info-column a.btn')
         .map((_, tagNode) => tagNode.innerText)
         .get();
 }
 
 function clickTime(time) {
-    $(`a.btn-sm:contains("${time}")`)[0].click();
+    $(`div.qb-movie-info-column a.btn:contains("${time}")`)[0].click();
 }
 
 function clickTicketQuantity() {
